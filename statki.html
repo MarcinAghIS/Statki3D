@@ -1,0 +1,1576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Statki 3D</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(to bottom, #87CEEB, #4682B4);
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+        }
+
+        .button {
+            background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 25px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+
+        .button:hover {
+            transform: scale(1.05);
+        }
+
+        .score {
+            font-size: 18px;
+            margin: 10px 0;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        #shipSelection {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+        }
+
+        .ship-option {
+            background: rgba(255, 255, 255, 0.2);
+            margin: 5px 0;
+            padding: 8px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+
+        .ship-option:hover {
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        .ship-option.selected {
+            background: rgba(76, 175, 80, 0.6);
+        }
+
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="ui">
+            <div class="score">Ilosc zwycieztw gracza: <span id="playerScore">0</span></div>
+            <div class="score">Ilosc zwycieztw komputera: <span id="computerScore">0</span></div>
+            <button class="button" id="startBattle" style="display:none;">Start</button>
+            <button class="button" id="resetGame">Reset</button>
+        </div>
+
+        <div id="shipSelection">
+            <h3>Postaw wybrany statek:</h3>
+            <div id="shipOptions"></div>
+        </div>
+
+        <div id="instructions">
+            <p>Kliknij, aby postawić statki na swojej planszy (lewa). Kliknij prawym przyciskiem, aby obrócić. Kliknij planszę przeciwnika (prawa), aby zaatakować podczas bitwy.</p>
+        </div>
+    </div>
+    <script>
+        // Zmienne globalne
+        let scena, kamera, renderownik, kontrolery;
+        let planszaGracza, planszaKomputera;
+        let grupaPlanszyGracza, grupaPlanszyKomputera;
+        let promienCaster, mysz;
+        let stanGry = 'setup'; // setup, battle, gameOver
+        let teksturaNieznana;
+
+        let czasAnimacji = 0;
+
+        const N = 10;
+        let tura = 0; // 0 = gracz, 1 = komputer
+        let side = 0;
+        let wybrany = 0;
+        let indeksWybranegoStatku = 0;
+        let statki = [4, 3, 3, 2, 2, 2, 1, 1, 1, 1];
+        let dostepneStatki = [...statki];
+        let iloscWygranychGracza = 0;
+        let iloscWygranychKomputera = 0;
+        let tablicaKomputera = []; // Jak chce pan oszukiwać, to w konsoli można zobaczyć gdzie przeciwnik ma statki :) Jest dodany border = 1, bo było mi to potrzebne, zeby nie wychodzić poza planszę przy sprawdzaniu sąsiadów
+        let tablicaGracza = [];
+
+        let kostki3DGracza = [];
+        let kostki3DKomputera = [];
+        let statki3DGracza = [];
+        let statki3DKomputera = [];
+
+        // Kolory
+        const KOLORY = {
+            woda: 0x006994,
+            wodaGracza: 0x00AA00,
+            wodaPrzeciwniku: 0xAA0000,
+            plansza: 0xCCCCCC,
+            statek: 0x666666,
+            trafienie: 0xFF4444,
+            pudlo: 0x87CEEB,
+            wybrany: 0x00FF00,
+            najedzieMysza: 0xFFFF00
+        };
+
+        function init() {
+            // Inicjalizacja sceny Three.js
+            scena = new THREE.Scene();
+            scena.background = new THREE.Color(0x87CEEB);
+
+            // Stworz proceduralna teksture "nieznana" jako zapasowa
+            function stworzTekstureNieznana() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 192;  // Dopasowanie rozmiaru tekstury
+                canvas.height = 192; // Dopasowanie rozmiaru tekstury
+                const kontekst = canvas.getContext('2d');
+
+                // Stworzenie wzoru znaku zapytania
+                kontekst.fillStyle = '#333333';
+                kontekst.fillRect(0, 0, 192, 192);
+
+                kontekst.fillStyle = '#FFFFFF';
+                kontekst.font = 'bold 120px Arial';  // Skalowanie czcionki dla wiekszego canvas
+                kontekst.textAlign = 'center';
+                kontekst.textBaseline = 'middle';
+                kontekst.fillText('?', 96, 96);
+
+                const tekstura = new THREE.CanvasTexture(canvas);
+                tekstura.generateMipmaps = true;  // Wlacz mipmapy dla lepszej jakosci
+                tekstura.minFilter = THREE.LinearMipmapLinearFilter;
+                tekstura.magFilter = THREE.LinearFilter;
+                tekstura.wrapS = THREE.ClampToEdgeWrapping;
+                tekstura.wrapT = THREE.ClampToEdgeWrapping;
+                tekstura.format = THREE.RGBFormat;
+
+                return tekstura;
+            }
+
+            // Wczytaj teksture dla plytki wroga
+            teksturaNieznana = stworzTekstureNieznana(); // Zaczynaj z proceduralna tekstura
+
+            const ladownikTekstur = new THREE.TextureLoader();
+            ladownikTekstur.load(
+                'unknown.jpg',
+                function(tekstura) {
+                    console.log('Tekstura nieznana wczytana pomyslnie, rozmiar:', tekstura.image.width + 'x' + tekstura.image.height);
+
+                    // Napraw orientacje tekstury (do gory nogami i odbicie)
+                    tekstura.generateMipmaps = true;
+                    tekstura.minFilter = THREE.LinearMipmapLinearFilter;
+                    tekstura.magFilter = THREE.LinearFilter;
+                    tekstura.wrapS = THREE.RepeatWrapping;
+                    tekstura.wrapT = THREE.RepeatWrapping;
+                    tekstura.flipY = true;
+                    tekstura.repeat.set(1, 1);
+                    tekstura.offset.set(1, 0);
+
+                    // Ustaw format tekstury dla lepszej kompatybilnosci
+                    tekstura.format = THREE.RGBFormat;
+                    tekstura.needsUpdate = true;
+
+                    teksturaNieznana.dispose(); // Wyczysc stara teksture
+                    teksturaNieznana = tekstura;
+
+                    // Wymus aktualizacje wszystkich plytki wroga z nowa tekstura
+                    setTimeout(() => {
+                        aktualizujPlytkiWrogaZTekstura();
+                    }, 100);
+                },
+                function(postep) {
+                    // Callback postepu
+                    console.log('Ladowanie tekstury:', (postep.loaded / postep.total * 100) + '%');
+                },
+                function(blad) {
+                    // Callback bledu - zachowaj proceduralna teksture
+                    console.warn('Tekstura nieznana nie mogla zostac wczytana:', blad);
+                }
+            );
+
+            // Ustawienie kamery
+            kamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            kamera.position.set(0, 15, 20);
+
+            // Ustawienie renderownika
+            renderownik = new THREE.WebGLRenderer({ antialias: true });
+            renderownik.setSize(window.innerWidth, window.innerHeight);
+            renderownik.shadowMap.enabled = true;
+            renderownik.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('gameContainer').appendChild(renderownik.domElement);
+
+            // Kontrolery
+            kontrolery = new THREE.OrbitControls(kamera, renderownik.domElement);
+            kontrolery.enableDamping = true;
+            kontrolery.dampingFactor = 0.05;
+
+            // Oswietlenie
+            const swiatloOtoczenia = new THREE.AmbientLight(0x404040, 0.6);
+            scena.add(swiatloOtoczenia);
+
+            const swiatloKierunkowe = new THREE.DirectionalLight(0xffffff, 1.0);
+            swiatloKierunkowe.position.set(0, 30, 25);
+            swiatloKierunkowe.castShadow = true;
+            swiatloKierunkowe.shadow.mapSize.width = 4096;
+            swiatloKierunkowe.shadow.mapSize.height = 4096;
+            swiatloKierunkowe.shadow.camera.near = 0.5;
+            swiatloKierunkowe.shadow.camera.far = 500;
+            swiatloKierunkowe.shadow.camera.left = -50;
+            swiatloKierunkowe.shadow.camera.right = 50;
+            swiatloKierunkowe.shadow.camera.top = 50;
+            swiatloKierunkowe.shadow.camera.bottom = -50;
+            scena.add(swiatloKierunkowe);
+
+            // Dodaj swiatlo wypelniajace dla lepszego oswietlenia
+            const swiatloWypelniajace = new THREE.DirectionalLight(0xffffff, 0.3);
+            swiatloWypelniajace.position.set(-20, 20, -20);
+            scena.add(swiatloWypelniajace);
+
+            // Promien caster do interakcji z mysza
+            promienCaster = new THREE.Raycaster();
+            mysz = new THREE.Vector2();
+
+            // Nasluchiwanie zdarzen
+            renderownik.domElement.addEventListener('click', klikniecieMyszy);
+            renderownik.domElement.addEventListener('contextmenu', kliknieciePrawyPrzycisk);
+            renderownik.domElement.addEventListener('mousemove', ruchMyszy);
+            window.addEventListener('resize', zmianRozmiaru);
+
+            // Nasluchiwanie zdarzen UI
+            document.getElementById('resetGame').addEventListener('click', start);
+            document.getElementById('startBattle').addEventListener('click', rozpocznijBitwe);
+
+            // Inicjalizuj gre
+            start();
+        }
+
+        function tabele() {
+            tablicaKomputera = [];
+            tablicaGracza = [];
+            for (let i = 0; i < N + 2; i++) {
+                tablicaKomputera[i] = [];
+                tablicaGracza[i] = [];
+                for (let j = 0; j < N + 2; j++) {
+                    tablicaKomputera[i][j] = 0;
+                    tablicaGracza[i][j] = 0;
+                }
+            }
+        }
+
+        function aktualizujPlytkiWrogaZTekstura() {
+            if (!kostki3DKomputera || !teksturaNieznana) {
+                console.log('Nie mozna zaktualizowac plytki wroga - brakuje kostek lub tekstury');
+                return;
+            }
+
+            console.log('Aktualizowanie plytki wroga z nowa tekstura');
+            for (let i = 0; i < N; i++) {
+                for (let j = 0; j < N; j++) {
+                    const kostka = kostki3DKomputera[i][j];
+                    if (kostka && kostka.userData.maTeksture && kostka.userData.czyGracz === false) {
+                        // Aktualizuj material aby uzywac wczytanej tekstury
+                        kostka.material.map = teksturaNieznana;
+                        kostka.material.color.setHex(0xffffff); // Biala baza dla tekstury
+                        kostka.material.needsUpdate = true;
+                    }
+                }
+            }
+            console.log('Plytki wroga zaktualizowane');
+        }
+
+        function stworzPlansze3D(x, y, z, czyGracz = true) {
+            const grupaPlanszy = new THREE.Group();
+            const kostki = [];
+
+            // Stworz baze wody z roznymi kolorami dla gracza/wroga
+            const geometriaWody = new THREE.PlaneGeometry(12, 12);
+            const kolorWody = czyGracz ? KOLORY.wodaGracza : KOLORY.wodaPrzeciwniku;
+            const materialWody = new THREE.MeshPhongMaterial({
+                color: kolorWody,
+                transparent: true,
+                opacity: 1,
+                shininess: 100,
+                specular: 0x222222,
+                reflectivity: 0.3
+            });
+            const woda = new THREE.Mesh(geometriaWody, materialWody);
+            woda.rotation.x = -Math.PI / 2;
+            woda.position.set(x, y - 0.1, z);
+            woda.receiveShadow = true;
+            grupaPlanszy.add(woda);
+
+            // Stworz siatke planszy z odstepami miedzy plytkami
+            for (let i = 0; i < N; i++) {
+                kostki[i] = [];
+                for (let j = 0; j < N; j++) {
+                    const geometria = new THREE.BoxGeometry(0.9, 0.2, 0.9);
+
+                    // Stworz rozne materialy dla plytki gracza vs wroga
+                    let material;
+                    if (czyGracz) {
+                        // Plytki gracza - standardowy material
+                        material = new THREE.MeshPhongMaterial({
+                            color: KOLORY.plansza,
+                            transparent: false,
+                            opacity: 1.0,
+                            shininess: 80,
+                            specular: 0x444444,
+                            reflectivity: 0.2
+                        });
+                    } else {
+                        // Plytki wroga - uzyj tekstury nieznanej (zawsze dostepnej teraz)
+                        material = new THREE.MeshPhongMaterial({
+                            color: 0xffffff, // Biala baza aby pokazac teksture poprawnie
+                            map: teksturaNieznana,
+                            transparent: false,
+                            opacity: 1.0,
+                            shininess: 80,
+                            specular: 0x444444,
+                            reflectivity: 0.2
+                        });
+                    }
+
+                    const kostka = new THREE.Mesh(geometria, material);
+                    kostka.position.set(x + i - 4.5, y, z + j - 4.5);
+                    kostka.castShadow = true;
+                    kostka.receiveShadow = true;
+
+                    // Przechowuj wspolrzedne siatki
+                    kostka.userData = {
+                        siatkaX: i + 1,
+                        siatkaY: j + 1,
+                        czyGracz: czyGracz,
+                        oryginalnyKolor: KOLORY.plansza,
+                        maTeksture: !czyGracz // Plytki wroga maja teksture poczatkowo
+                    };
+
+                    grupaPlanszy.add(kostka);
+                    kostki[i][j] = kostka;
+                }
+            }
+
+            scena.add(grupaPlanszy);
+            return { grupa: grupaPlanszy, kostki: kostki };
+        }
+
+        function stworzUIStatku() {
+            const opcjeStatkow = document.getElementById('shipOptions');
+            opcjeStatkow.innerHTML = '';
+
+            dostepneStatki.forEach((dlugosc, indeks) => {
+                const opcja = document.createElement('div');
+                opcja.className = 'ship-option';
+                opcja.textContent = `Statek ${dlugosc} pol`;
+                opcja.onclick = () => wybierzStatek(indeks);
+                if (indeks === indeksWybranegoStatku) opcja.classList.add('selected');
+                opcjeStatkow.appendChild(opcja);
+            });
+        }
+
+        function wybierzStatek(indeks) {
+            indeksWybranegoStatku = indeks;
+            stworzUIStatku();
+        }
+
+        function stworzStatek3D(startX, startY, dlugosc, poziomo, czyGracz = true) {
+            const grupaStatku = new THREE.Group();
+            const odsuniecePlanszy = czyGracz ? -10 : 10; // Zaktualizowana pozycja planszy
+
+            // Zaawansowany material shaderowy GLSL dla statkow
+            const materialStatku = new THREE.ShaderMaterial({
+                uniforms: {
+                    czas: { value: 0.0 },
+                    kolorBazowy: { value: new THREE.Color(KOLORY.statek) },
+                    swiatloKierunkowe: { value: new THREE.Vector3(-1, 1, 1).normalize() },
+                    metalicznosc: { value: 0.8 },
+                    szorstkiosc: { value: 0.3 }
+                },
+                vertexShader: `
+                    varying vec3 vNormal;
+                    varying vec3 vViewPosition;
+                    varying vec2 vUv;
+                    varying vec3 vWorldPosition;
+
+                    void main() {
+                        vUv = uv;
+                        vNormal = normalize(normalMatrix * normal);
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        vViewPosition = -mvPosition.xyz;
+                        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+                        gl_Position = projectionMatrix * mvPosition;
+                    }
+                `,
+                fragmentShader: `
+                    uniform float czas;
+                    uniform vec3 kolorBazowy;
+                    uniform vec3 swiatloKierunkowe;
+                    uniform float metalicznosc;
+                    uniform float szorstkiosc;
+                    varying vec3 vNormal;
+                    varying vec3 vViewPosition;
+                    varying vec2 vUv;
+                    varying vec3 vWorldPosition;
+
+                    // PBR (Physically Based Rendering) funkcje - uproszczone
+                    vec3 getNormalFromBumpMap() {
+                        // Uproszczone bump mapping bez pochodnych
+                        float bumpScale = 0.1;
+                        float height = sin(vUv.x * 50.0) * cos(vUv.y * 50.0) * bumpScale;
+                        // Zamiast dFdx/dFdy używamy stałych wartości
+                        vec3 bump = vec3(0.1, 0.1, 1.0) * height;
+                        return normalize(vNormal + bump * 0.05);
+                    }
+
+                    float distributionGGX(vec3 N, vec3 H, float roughness) {
+                        float a = roughness * roughness;
+                        float a2 = a * a;
+                        float NdotH = max(dot(N, H), 0.0);
+                        float NdotH2 = NdotH * NdotH;
+                        float num = a2;
+                        float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+                        denom = 3.14159265 * denom * denom;
+                        return num / denom;
+                    }
+
+                    float geometrySchlickGGX(float NdotV, float roughness) {
+                        float r = (roughness + 1.0);
+                        float k = (r * r) / 8.0;
+                        float num = NdotV;
+                        float denom = NdotV * (1.0 - k) + k;
+                        return num / denom;
+                    }
+
+                    float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+                        float NdotV = max(dot(N, V), 0.0);
+                        float NdotL = max(dot(N, L), 0.0);
+                        float ggx2 = geometrySchlickGGX(NdotV, roughness);
+                        float ggx1 = geometrySchlickGGX(NdotL, roughness);
+                        return ggx1 * ggx2;
+                    }
+
+                    vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+                        return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+                    }
+
+                    void main() {
+                        vec3 N = getNormalFromBumpMap();
+                        vec3 V = normalize(vViewPosition);
+                        vec3 L = normalize(swiatloKierunkowe);
+                        vec3 H = normalize(V + L);
+
+                        // Efekt energii/pulsowania - okragly/radialny
+                        vec2 centrum = vec2(0.5, 0.5);
+                        float odlegloscOdCentrum = distance(vUv, centrum);
+
+                        // Koncentryczne fale od centrum
+                        float falaRadialna = sin(odlegloscOdCentrum * 20.0 - czas * 4.0);
+                        float pulsOkragly = cos(odlegloscOdCentrum * 15.0 + czas * 3.0);
+
+                        // Spiralny efekt
+                        float kat = atan(vUv.y - 0.5, vUv.x - 0.5);
+                        float spiral = sin(kat * 3.0 + odlegloscOdCentrum * 10.0 - czas * 2.0);
+
+                        // Kombinacja radialnych efektow
+                        float energia = mix(
+                            smoothstep(-1.0, 1.0, falaRadialna) * 1.4,
+                            pow(abs(pulsOkragly), 0.6) * 1.3,
+                            (spiral * 0.5 + 0.5) * 1.1
+                        ) + 0.7;
+
+                        // Material properties
+                        vec3 albedo = kolorBazowy * energia;
+                        float metallic = metalicznosc;
+                        float roughness = szorstkiosc;
+
+                        // PBR calculation
+                        vec3 F0 = vec3(0.04);
+                        F0 = mix(F0, albedo, metallic);
+
+                        float NDF = distributionGGX(N, H, roughness);
+                        float G = geometrySmith(N, V, L, roughness);
+                        vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+
+                        vec3 kS = F;
+                        vec3 kD = vec3(1.0) - kS;
+                        kD *= 1.0 - metallic;
+
+                        vec3 numerator = NDF * G * F;
+                        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+                        vec3 specular = numerator / denominator;
+
+                        float NdotL = max(dot(N, L), 0.0);
+                        vec3 Lo = (kD * albedo / 3.14159265 + specular) * NdotL;
+
+                        // Ambient lighting - zwiększone
+                        vec3 ambient = vec3(0.15) * albedo * energia;
+                        vec3 color = ambient + Lo * 2.0;                        // HDR tonemapping
+                        color = color / (color + vec3(1.0));
+                        // Gamma correction
+                        color = pow(color, vec3(1.0/2.2));
+
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `,
+                side: THREE.DoubleSide
+            });            for (let i = 0; i < dlugosc; i++) {
+                const geometria = new THREE.BoxGeometry(0.8, 0.4, 0.8);
+                const czescStatku = new THREE.Mesh(geometria, materialStatku);
+
+                // Konwertuj wspolrzedne siatki (1-10) na wspolrzedne swiatowe 3D
+                if (poziomo) {
+                    czescStatku.position.set(
+                        odsuniecePlanszy + (startX - 1) + i - 4.5,
+                        0.3,
+                        (startY - 1) - 4.5
+                    );
+                } else {
+                    czescStatku.position.set(
+                        odsuniecePlanszy + (startX - 1) - 4.5,
+                        0.3,
+                        (startY - 1) + i - 4.5
+                    );
+                }
+
+                czescStatku.castShadow = true;
+                czescStatku.receiveShadow = true;
+                grupaStatku.add(czescStatku);
+            }
+
+            scena.add(grupaStatku);
+            return grupaStatku;
+        }        function ruchMyszy(zdarzenie) {
+            mysz.x = (zdarzenie.clientX / window.innerWidth) * 2 - 1;
+            mysz.y = -(zdarzenie.clientY / window.innerHeight) * 2 + 1;
+
+            if (stanGry === 'setup') {
+                podswietlPodgladUstawienia();
+            }
+        }
+
+        function podswietlPodgladUstawienia() {
+            // Resetuj wszystkie kolory kostek
+            resetujKoloryPlanszy(kostki3DGracza);
+
+            promienCaster.setFromCamera(mysz, kamera);
+            const przeciecia = promienCaster.intersectObjects(grupaPlanszyGracza.children.filter(dziecko =>
+                dziecko.userData && dziecko.userData.czyGracz
+            ));
+
+            if (przeciecia.length > 0 && dostepneStatki.length > 0) {
+                const kostka = przeciecia[0].object;
+                if (kostka.userData) {
+                    const { siatkaX, siatkaY } = kostka.userData;
+                    podgladUstawieniaStatku(siatkaX, siatkaY, dostepneStatki[indeksWybranegoStatku], side === 0);
+                }
+            }
+        }
+
+        function podgladUstawieniaStatku(x, y, dlugosc, poziomo) {
+            const pozycje = pobierzPozycjeStatku(x, y, dlugosc, poziomo);
+            const moznaPostawic = sprawdzUstawienieStatku(pozycje, tablicaGracza);
+
+            pozycje.forEach(poz => {
+                if (poz.x >= 1 && poz.x <= N && poz.y >= 1 && poz.y <= N) {
+                    const kostka = kostki3DGracza[poz.x - 1][poz.y - 1];
+                    kostka.material.color.setHex(moznaPostawic ? KOLORY.wybrany : KOLORY.trafienie);
+                }
+            });
+        }
+
+        function pobierzPozycjeStatku(startX, startY, dlugosc, poziomo) {
+            const pozycje = [];
+            for (let i = 0; i < dlugosc; i++) {
+                if (poziomo) {
+                    pozycje.push({ x: startX + i, y: startY });
+                } else {
+                    pozycje.push({ x: startX, y: startY + i });
+                }
+            }
+            return pozycje;
+        }
+
+        function sprawdzUstawienieStatku(pozycje, plansza) {
+            // Sprawdz czy statek sie miesci i nie koliduje
+            for (const poz of pozycje) {
+                if (poz.x < 1 || poz.x > N || poz.y < 1 || poz.y > N) return false;
+
+                // Sprawdz kolizje z istniejacymi statkami i ich sasiadami
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        const sprawdzX = poz.x + dx;
+                        const sprawdzY = poz.y + dy;
+                        if (sprawdzX >= 0 && sprawdzX < N + 2 && sprawdzY >= 0 && sprawdzY < N + 2) {
+                            if (plansza[sprawdzY][sprawdzX] === 1) return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        function klikniecieMyszy(zdarzenie) {
+            promienCaster.setFromCamera(mysz, kamera);
+
+            if (stanGry === 'setup') {
+                obsluzKliknieciePodczasUstawien();
+            } else if (stanGry === 'battle') {
+                obsluzKliknieciePodczasBitwy();
+            }
+        }
+
+        function obsluzKliknieciePodczasUstawien() {
+            const przeciecia = promienCaster.intersectObjects(grupaPlanszyGracza.children.filter(dziecko =>
+                dziecko.userData && dziecko.userData.czyGracz
+            ));
+
+            if (przeciecia.length > 0 && dostepneStatki.length > 0) {
+                const kostka = przeciecia[0].object;
+                const { siatkaX, siatkaY } = kostka.userData;
+                const dlugoscStatku = dostepneStatki[indeksWybranegoStatku];
+                const poziomo = side === 0;
+
+                if (umieszczStatekGracza(siatkaX, siatkaY, dlugoscStatku, poziomo)) {
+                    dostepneStatki.splice(indeksWybranegoStatku, 1);
+                    if (indeksWybranegoStatku >= dostepneStatki.length) {
+                        indeksWybranegoStatku = Math.max(0, dostepneStatki.length - 1);
+                    }
+                    stworzUIStatku();
+
+                    if (dostepneStatki.length === 0) {
+                        document.getElementById('startBattle').style.display = 'block';
+                        document.getElementById('shipSelection').style.display = 'none';
+                    }
+                }
+            }
+        }
+
+        function obsluzKliknieciePodczasBitwy() {
+            if (tura !== 0) return; // Nie tura gracza
+
+            const przeciecia = promienCaster.intersectObjects(grupaPlanszyKomputera.children.filter(dziecko =>
+                dziecko.userData && !dziecko.userData.czyGracz
+            ));
+
+            if (przeciecia.length > 0) {
+                const kostka = przeciecia[0].object;
+                const { siatkaX, siatkaY } = kostka.userData;
+                atakGracza(siatkaX, siatkaY);
+            }
+        }
+
+        function kliknieciePrawyPrzycisk(zdarzenie) {
+            zdarzenie.preventDefault();
+            if (stanGry === 'setup') {
+                side = side === 0 ? 1 : 0; // Przelacz rotacje
+            }
+        }
+
+        function umieszczStatekGracza(x, y, dlugosc, poziomo) {
+            const pozycje = pobierzPozycjeStatku(x, y, dlugosc, poziomo);
+
+            if (!sprawdzUstawienieStatku(pozycje, tablicaGracza)) return false;
+
+            // Umiesc statek w logicznej siatce
+            pozycje.forEach(poz => {
+                tablicaGracza[poz.y][poz.x] = 1;
+            });
+
+            // Stworz statek 3D
+            const statek = stworzStatek3D(x, y, dlugosc, poziomo, true);
+            statki3DGracza.push(statek);
+
+            return true;
+        }
+
+        // Zachowana oryginalna logika umieszczania statkow komputera
+        function losMiejsca(a) {
+            const x = Math.floor(Math.random() * N) + 1;
+            const y = Math.floor(Math.random() * N) + 1;
+            const z = Math.round(Math.random());
+            sprawdzanie(a, x, y, z);
+        }
+
+        function sprawdzanie(dlugosc, x, y, z) {
+            let startXStatku, startYStatku, poziomo;
+
+            if (z === 0) { // poziomo
+                poziomo = true;
+                if (x + dlugosc + 2 < N + 2) { // w prawo
+                    for (let i = -1; i <= 1; i++) {
+                        for (let j = -1; j < dlugosc + 2; j++) {
+                            if (tablicaKomputera[x + j] && tablicaKomputera[x + j][y + i] === 1) {
+                                return losMiejsca(dlugosc);
+                            }
+                        }
+                    }
+                    for (let d = 0; d < dlugosc; d++) {
+                        tablicaKomputera[x + d][y] = 1;
+                    }
+                    startXStatku = x;
+                    startYStatku = y;
+                } else { // w lewo
+                    for (let i = -1; i <= 1; i++) {
+                        for (let j = -1; j < dlugosc + 2; j++) {
+                            if (tablicaKomputera[x - j] && tablicaKomputera[x - j][y + i] === 1) {
+                                return losMiejsca(dlugosc);
+                            }
+                        }
+                    }
+                    for (let d = 0; d < dlugosc; d++) {
+                        tablicaKomputera[x - d][y] = 1;
+                    }
+                    startXStatku = x - dlugosc + 1;
+                    startYStatku = y;
+                }
+            } else { // pionowo
+                poziomo = false;
+                if (y + dlugosc + 2 < N + 2) { // w dol
+                    for (let i = -1; i <= 1; i++) {
+                        for (let j = -1; j < dlugosc + 2; j++) {
+                            if (tablicaKomputera[x + i] && tablicaKomputera[x + i][y + j] === 1) {
+                                return losMiejsca(dlugosc);
+                            }
+                        }
+                    }
+                    for (let d = 0; d < dlugosc; d++) {
+                        tablicaKomputera[x][y + d] = 1;
+                    }
+                    startXStatku = x;
+                    startYStatku = y;
+                } else { // w gore
+                    for (let i = -1; i <= 1; i++) {
+                        for (let j = -1; j < dlugosc + 2; j++) {
+                            if (tablicaKomputera[x + i] && tablicaKomputera[x + i][y - j] === 1) {
+                                return losMiejsca(dlugosc);
+                            }
+                        }
+                    }
+                    for (let d = 0; d < dlugosc; d++) {
+                        tablicaKomputera[x][y - d] = 1;
+                    }
+                    startXStatku = x;
+                    startYStatku = y - dlugosc + 1;
+                }
+            }
+        }
+
+        function czyStatekZniszczony(trafienieX, trafienieY) {
+            // Znajdz wszystkie czesci statku ktory zostal trafiony
+            const czesciStatku = [];
+            const odwiedzone = new Set();
+            const doSprawdzenia = [{x: trafienieX, y: trafienieY}];
+
+            while (doSprawdzenia.length > 0) {
+                const {x, y} = doSprawdzenia.pop();
+                const klucz = `${x},${y}`;
+
+                if (odwiedzone.has(klucz) || x < 1 || x > N || y < 1 || y > N) continue;
+                if (tablicaKomputera[y][x] !== 3) continue; // Nie trafiona czesc statku
+
+                odwiedzone.add(klucz);
+                czesciStatku.push({x, y});
+
+                // Sprawdz sasiednie komorki (poziomo i pionowo)
+                doSprawdzenia.push({x: x+1, y}, {x: x-1, y}, {x, y: y+1}, {x, y: y-1});
+            }
+
+            // Teraz sprawdz czy sa jakies nieuszkodzone czesci tego statku
+            for (const czesc of czesciStatku) {
+                const {x, y} = czesc;
+                // Sprawdz sasiednie komorki dla nieuszkodzonych czesci statku (wartosc 1)
+                const sasiednie = [
+                    {x: x+1, y}, {x: x-1, y}, {x, y: y+1}, {x, y: y-1}
+                ];
+
+                for (const sasiad of sasiednie) {
+                    if (sasiad.x >= 1 && sasiad.x <= N && sasiad.y >= 1 && sasiad.y <= N) {
+                        if (tablicaKomputera[sasiad.y][sasiad.x] === 1) {
+                            return false; // Statek ma nieuszkodzone czesci
+                        }
+                    }
+                }
+            }
+
+            return czesciStatku.length > 0 ? czesciStatku : false;
+        }
+
+        // Funkcja do stworzenia materialu dla calkowicie zniszczonych statkow wroga (czerwono-czarny)
+        function stworzMaterialCalkowicieZniszczonegoStatku() {
+            return new THREE.ShaderMaterial({
+                uniforms: {
+                    czas: { value: 0.0 },
+                    kolorBazowy: { value: new THREE.Color(0x330000) }, // Ciemnoczerwony
+                    swiatloKierunkowe: { value: new THREE.Vector3(-1, 1, 1).normalize() },
+                    metalicznosc: { value: 0.9 },
+                    szorstkiosc: { value: 0.2 }
+                },
+                vertexShader: `
+                    varying vec3 vNormal;
+                    varying vec3 vViewPosition;
+                    varying vec2 vUv;
+                    varying vec3 vWorldPosition;
+
+                    void main() {
+                        vUv = uv;
+                        vNormal = normalize(normalMatrix * normal);
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        vViewPosition = -mvPosition.xyz;
+                        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+                        gl_Position = projectionMatrix * mvPosition;
+                    }
+                `,
+                fragmentShader: `
+                    uniform float czas;
+                    uniform vec3 kolorBazowy;
+                    uniform vec3 swiatloKierunkowe;
+                    uniform float metalicznosc;
+                    uniform float szorstkiosc;
+                    varying vec3 vNormal;
+                    varying vec3 vViewPosition;
+                    varying vec2 vUv;
+                    varying vec3 vWorldPosition;
+
+                    // Te same funkcje co statki gracza
+                    vec3 getNormalFromBumpMap() {
+                        float bumpScale = 0.1;
+                        float height = sin(vUv.x * 50.0) * cos(vUv.y * 50.0) * bumpScale;
+                        vec3 bump = vec3(0.1, 0.1, 1.0) * height;
+                        return normalize(vNormal + bump * 0.05);
+                    }
+
+                    float distributionGGX(vec3 N, vec3 H, float roughness) {
+                        float a = roughness * roughness;
+                        float a2 = a * a;
+                        float NdotH = max(dot(N, H), 0.0);
+                        float NdotH2 = NdotH * NdotH;
+                        float num = a2;
+                        float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+                        denom = 3.14159265 * denom * denom;
+                        return num / max(denom, 0.0001);
+                    }
+
+                    float geometrySchlickGGX(float NdotV, float roughness) {
+                        float r = (roughness + 1.0);
+                        float k = (r * r) / 8.0;
+                        float num = NdotV;
+                        float denom = NdotV * (1.0 - k) + k;
+                        return num / max(denom, 0.0001);
+                    }
+
+                    float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+                        float NdotV = max(dot(N, V), 0.0);
+                        float NdotL = max(dot(N, L), 0.0);
+                        float ggx2 = geometrySchlickGGX(NdotV, roughness);
+                        float ggx1 = geometrySchlickGGX(NdotL, roughness);
+                        return ggx1 * ggx2;
+                    }
+
+                    vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+                        return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+                    }
+
+                    void main() {
+                        vec3 N = getNormalFromBumpMap();
+                        vec3 V = normalize(vViewPosition);
+                        vec3 L = normalize(swiatloKierunkowe);
+                        vec3 H = normalize(V + L);
+
+                        // Czerwono-czarny efekt energii/pulsowania
+                        vec2 centrum = vec2(0.5, 0.5);
+                        float odlegloscOdCentrum = distance(vUv, centrum);
+
+                        // Koncentryczne fale od centrum - czerwone
+                        float falaRadialna = sin(odlegloscOdCentrum * 20.0 - czas * 4.0);
+                        float pulsOkragly = cos(odlegloscOdCentrum * 15.0 + czas * 3.0);
+
+                        // Spiralny efekt - ciemnoczerwony
+                        float kat = atan(vUv.y - 0.5, vUv.x - 0.5);
+                        float spiral = sin(kat * 3.0 + odlegloscOdCentrum * 10.0 - czas * 2.0);
+
+                        // Kombinacja radialnych efektow - czerwono-czarna
+                        float energia = mix(\n                            smoothstep(-1.0, 1.0, falaRadialna) * 1.4,\n                            pow(abs(pulsOkragly), 0.6) * 1.3,\n                            (spiral * 0.5 + 0.5) * 1.1\n                        ) + 0.7;
+
+                        // Material properties - czerwono-czarny
+                        vec3 albedo = kolorBazowy * energia;
+                        float metallic = metalicznosc;
+                        float roughness = szorstkiosc;
+
+                        // PBR calculation
+                        vec3 F0 = vec3(0.04);
+                        F0 = mix(F0, albedo, metallic);
+
+                        float NDF = distributionGGX(N, H, roughness);
+                        float G = geometrySmith(N, V, L, roughness);
+                        vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+
+                        vec3 kS = F;
+                        vec3 kD = vec3(1.0) - kS;
+                        kD *= 1.0 - metallic;
+
+                        vec3 numerator = NDF * G * F;
+                        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+                        vec3 specular = numerator / denominator;
+
+                        float NdotL = max(dot(N, L), 0.0);
+                        vec3 Lo = (kD * albedo / 3.14159265 + specular) * NdotL;
+
+                        // Ambient lighting - czerwonkawy
+                        vec3 ambient = vec3(0.15, 0.05, 0.05) * albedo * energia;
+                        vec3 color = ambient + Lo * 2.0;
+
+                        // HDR tonemapping
+                        color = color / (color + vec3(1.0));
+                        // Gamma correction
+                        color = pow(color, vec3(1.0/2.2));
+
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `,
+                side: THREE.DoubleSide
+            });
+        }
+        function stworzMaterialZniszczonegoStatku() {
+            return new THREE.ShaderMaterial({
+                uniforms: {
+                    czas: { value: 0.0 },
+                    kolorBazowy: { value: new THREE.Color(0x660000) },
+                    kolorIskier: { value: new THREE.Color(0xffaa00) },
+                    intensywnoscUszkodziania: { value: 1.0 }
+                },
+                vertexShader: `
+                    varying vec3 vNormal;
+                    varying vec3 vViewPosition;
+                    varying vec2 vUv;
+                    varying vec3 vWorldPosition;
+
+                    void main() {
+                        vUv = uv;
+                        vNormal = normalize(normalMatrix * normal);
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        vViewPosition = -mvPosition.xyz;
+                        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+                        gl_Position = projectionMatrix * mvPosition;
+                    }
+                `,
+                fragmentShader: `
+                    uniform float czas;
+                    uniform vec3 kolorBazowy;
+                    uniform vec3 kolorIskier;
+                    uniform float intensywnoscUszkodziania;
+                    varying vec3 vNormal;
+                    varying vec3 vViewPosition;
+                    varying vec2 vUv;
+                    varying vec3 vWorldPosition;
+
+                    // Funkcja szumu dla efektow uszkodziania
+                    float hash(vec2 p) {
+                        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+                    }
+
+                    float noise(vec2 p) {
+                        vec2 i = floor(p);
+                        vec2 f = fract(p);
+                        vec2 u = f * f * (3.0 - 2.0 * f);
+                        return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+                                  mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+                    }
+
+                    void main() {
+                        // Podstawowe oswietlenie
+                        vec3 lightDir = normalize(vec3(1.0, 1.0, 0.5));
+                        float diff = max(dot(vNormal, lightDir), 0.0);
+
+                        // Efekty uszkodziania - iskry i uszkodzenia
+                        float szum1 = noise(vUv * 15.0 + czas * 3.0);
+                        float szum2 = noise(vUv * 25.0 - czas * 4.0);
+
+                        // Koncentryczne fale uszkodziania od centrum
+                        vec2 centrum = vec2(0.5, 0.5);
+                        float odlegloscOdCentrum = distance(vUv, centrum);
+                        float falaUszkodziania = sin(odlegloscOdCentrum * 30.0 - czas * 6.0);
+
+                        // Iskry i uszkodzenia
+                        float iskry = step(0.7, szum1) * step(0.8, szum2) * (sin(czas * 10.0) * 0.5 + 0.5);
+                        float uszkodzenia = smoothstep(0.3, 0.7, szum1 * szum2);
+
+                        // Pulsujace uszkodzenia
+                        float pulsUszkodzen = sin(czas * 4.0 + odlegloscOdCentrum * 20.0) * 0.5 + 0.5;
+                        float intensywnoscUszkodzen = uszkodzenia * pulsUszkodzen * intensywnoscUszkodziania;
+
+                        // Mieszanie kolorow
+                        vec3 kolorUszkodzony = mix(kolorBazowy * 0.3, kolorBazowy, diff);
+                        vec3 kolorZIskrami = mix(kolorUszkodzony, kolorIskier, iskry * 0.8);
+                        vec3 finalnyKolor = mix(kolorZIskrami, kolorIskier * 1.5, intensywnoscUszkodzen * 0.4);
+
+                        // Dodaj efekt migotania
+                        float migotanie = step(0.95, noise(vUv * 50.0 + czas * 8.0));
+                        finalnyKolor += kolorIskier * migotanie * 0.6;
+
+                        gl_FragColor = vec4(finalnyKolor, 1.0);
+                    }
+                `,
+                transparent: false
+            });
+        }
+
+        function stworzAnimacjeZniszczenia(czesciStatku) {
+            const particles = [];
+
+            czesciStatku.forEach(czesc => {
+                const odsunieciePlanszy = 10;
+                const Xswiata = odsunieciePlanszy + (czesc.x - 1) - 4.5;
+                const Zswiata = (czesc.y - 1) - 4.5;
+
+                // Stworz wiele szesciokatow wokol kazdej czesci statku
+                // Wybuch
+                for (let i = 0; i < 8; i++) {
+                    const geometriaEksplozji = new THREE.CylinderGeometry(0.3, 0.3, 0.05, 6);
+                    const czyCzerwony = Math.random() > 0.5;
+                    const materialEksplozji = new THREE.MeshBasicMaterial({
+                        color: czyCzerwony ? 0xff0000 : 0x000000,
+                        transparent: true,
+                        opacity: 0.8
+                    });
+
+                    const particle = new THREE.Mesh(geometriaEksplozji, materialEksplozji);
+
+                    // Losowa pozycja wokol czesci statku
+                    const kat = (i / 8) * Math.PI * 2 + Math.random() * 0.5;
+                    const promien = 0.3 + Math.random() * 0.4;
+
+                    particle.position.set(
+                        Xswiata + Math.cos(kat) * promien,
+                        0.4 + Math.random() * 0.3,
+                        Zswiata + Math.sin(kat) * promien
+                    );
+
+                    // Losowa rotacja czasteczki
+                    particle.rotation.x = Math.random() * Math.PI;
+                    particle.rotation.y = Math.random() * Math.PI;
+                    particle.rotation.z = Math.random() * Math.PI;
+
+                    // Dodaj predkosc dla animacji
+                    particle.predkosc = {
+                        x: (Math.random() - 0.5) * 0.02,
+                        y: Math.random() * 0.03,
+                        z: (Math.random() - 0.5) * 0.02,
+                        rotacja: {
+                            x: (Math.random() - 0.5) * 0.1,
+                            y: (Math.random() - 0.5) * 0.1,
+                            z: (Math.random() - 0.5) * 0.1
+                        }
+                    };
+
+                    scena.add(particle);
+                    particles.push(particle);
+                }
+            });
+
+            const animujZniszczenie = () => {
+                particles.forEach(particle => {
+                    particle.position.add(new THREE.Vector3(particle.predkosc.x, particle.predkosc.y, particle.predkosc.z));
+                    particle.predkosc.y -= 0.001; // grawitacja
+
+                    particle.rotation.x += particle.predkosc.rotacja.x;
+                    particle.rotation.y += particle.predkosc.rotacja.y;
+                    particle.rotation.z += particle.predkosc.rotacja.z;
+
+                    particle.material.opacity *= 0.95;
+                });
+
+                if (particles[0] && particles[0].material.opacity > 0.1) {
+                    requestAnimationFrame(animujZniszczenie);
+                } else {
+                    // Posprzataj
+                    particles.forEach(particle => scena.remove(particle));
+                }
+            };
+
+            animujZniszczenie();
+        }
+
+        function zbityElementStatku(x, y) {
+            // Stworz pojedyncza czesc statku w trafionym miejscu bez shadera (tylko trafienie)
+            const geometria = new THREE.BoxGeometry(0.8, 0.4, 0.8);
+            const material = new THREE.MeshPhongMaterial({
+                color: KOLORY.statek,
+                shininess: 50,
+                specular: 0x111111
+            });
+            const czescStatku = new THREE.Mesh(geometria, material);
+
+            // Dodaj identyfikator pozycji dla pozniejszego wyszukiwania
+            czescStatku.userData.pozycjaX = x;
+            czescStatku.userData.pozycjaY = y;
+
+            // Ustaw czesc statku poprawnie na planszy komputera
+            const odsunieciePlanszy = 10; // Zaktualizowane odsuniecie planszy
+            czescStatku.position.set(
+                odsunieciePlanszy + (x - 1) - 4.5,
+                0.3,
+                (y - 1) - 4.5
+            );
+
+            czescStatku.castShadow = true;
+            czescStatku.receiveShadow = true;
+            scena.add(czescStatku);
+
+            // Przechowaj referencje dla posprzatania
+            statki3DKomputera.push(czescStatku);
+
+            return czescStatku;
+        }
+
+        function atakGracza(x, y) {
+            if (!x || !y) return;
+            const kostka = kostki3DKomputera[x - 1][y - 1];
+
+            // Usun teksture nieznanej gdy plytka zostanie kliknieta
+            if (kostka.userData.maTeksture) {
+                kostka.material.map = null;
+                kostka.material.needsUpdate = true;
+                kostka.userData.maTeksture = false;
+            }
+
+            if (tablicaKomputera[y][x] === 0) { // pudlo
+                tablicaKomputera[y][x] = 2;
+                kostka.material.color.setHex(KOLORY.pudlo);
+                stworzEfektChlapania(kostka.position.clone().add(grupaPlanszyKomputera.position));
+                tura = 1;
+                setTimeout(atakKomputera, 1000);
+            } else if (tablicaKomputera[y][x] === 1) { // trafienie
+                tablicaKomputera[y][x] = 3;
+                kostka.material.color.setHex(KOLORY.trafienie);
+
+                // Ujawnij czesc statku tylko gdy trafiona
+                zbityElementStatku(x, y);
+
+                stworzEfektEksplozji(kostka.position.clone().add(grupaPlanszyKomputera.position));
+
+                // Sprawdz czy statek zostal calkowicie zniszczony
+                const zniszczoneczesciStatku = czyStatekZniszczony(x, y);
+                if (zniszczoneczesciStatku) {
+                    // Zastosuj shader calkowicie zniszczonego statku do rzeczywistych modeli statkow
+                    zniszczoneczesciStatku.forEach(czesc => {
+                        const pozycjaSwiat = {
+                            x: 10 + (czesc.x - 1) - 4.5,
+                            z: (czesc.y - 1) - 4.5
+                        };
+
+                        // Znajdz i zastap materialy w modelach statkow 3D
+                        statki3DKomputera.forEach(grupStatku => {
+                            if (grupStatku && grupStatku.children) {
+                                grupStatku.children.forEach(czescStatku => {
+                                    const odleglosc = Math.sqrt(
+                                        Math.pow(czescStatku.position.x - pozycjaSwiat.x, 2) +
+                                        Math.pow(czescStatku.position.z - pozycjaSwiat.z, 2)
+                                    );
+
+                                    if (odleglosc < 0.5) {
+                                        czescStatku.material = stworzMaterialCalkowicieZniszczonegoStatku();
+                                        czescStatku.userData.czyCalkowicieZniszczony = true;
+                                    }
+                                });
+                            }
+                        });
+                    });
+
+                    // Uruchom animacje zniszczenia i zastosuj shader
+                    setTimeout(() => {
+                        stworzAnimacjeZniszczenia(zniszczoneczesciStatku);
+
+                        // Zastosuj czerwono-czarny shader do wszystkich czesci zniszczonego statku
+                        zniszczoneczesciStatku.forEach(czesc => {
+                            // Znajdz wszystkie obiekty w scenie z odpowiednimi pozycjami
+                            scena.traverse((obiekt) => {
+                                if (obiekt.userData &&
+                                    obiekt.userData.pozycjaX === czesc.x &&
+                                    obiekt.userData.pozycjaY === czesc.y) {
+                                    // Zastap material na czerwono-czarny shader
+                                    obiekt.material = stworzMaterialCalkowicieZniszczonegoStatku();
+                                    obiekt.userData.czyCalkowicieZniszczony = true;
+                                    console.log(`✅ Shader zastosowany do pozycji ${czesc.x}, ${czesc.y}`);
+                                }
+                            });
+                        });
+                    }, 500);
+                }                sprawdzZwyciezce();
+            }
+        }
+
+        function atakKomputera() {
+            if (tura !== 1) return;
+
+            let bitex, bitey;
+            do {
+                bitex = Math.floor(Math.random() * 10) + 1;
+                bitey = Math.floor(Math.random() * 10) + 1;
+            } while (tablicaGracza[bitey][bitex] === 2 || tablicaGracza[bitey][bitex] === 3);
+
+            if (tablicaGracza[bitey][bitex] === 0) { // pudlo
+                tablicaGracza[bitey][bitex] = 2;
+                const kostka = kostki3DGracza[bitex - 1][bitey - 1];
+                kostka.material.color.setHex(KOLORY.pudlo);
+                stworzEfektChlapania(kostka.position.clone().add(grupaPlanszyGracza.position));
+                tura = 0;
+            } else if (tablicaGracza[bitey][bitex] === 1) { // trafienie
+                tablicaGracza[bitey][bitex] = 3;
+                const kostka = kostki3DGracza[bitex - 1][bitey - 1];
+                kostka.material.color.setHex(KOLORY.trafienie);
+                stworzEfektEksplozji(kostka.position.clone().add(grupaPlanszyGracza.position));
+                setTimeout(atakKomputera, 1000);
+            }
+            sprawdzZwyciezce();
+        }
+
+        function stworzEfektChlapania(pozycja) {
+            const geometriaChlapania = new THREE.SphereGeometry(0.3, 8, 8);
+            const materialChlapania = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.8
+            });
+            const chlapanie = new THREE.Mesh(geometriaChlapania, materialChlapania);
+            chlapanie.position.copy(pozycja);
+            chlapanie.position.y += 0.5;
+            scena.add(chlapanie);
+
+            // Animuj chlapanie
+            const animujChlapanie = () => {
+                chlapanie.scale.multiplyScalar(1.1);
+                chlapanie.material.opacity *= 0.9;
+                if (chlapanie.material.opacity > 0.1) {
+                    requestAnimationFrame(animujChlapanie);
+                } else {
+                    scena.remove(chlapanie);
+                }
+            };
+            animujChlapanie();
+        }
+
+        function stworzEfektEksplozji(pozycja) {
+            const czastki = [];
+            for (let i = 0; i < 10; i++) {
+                const geometriaCzastki = new THREE.SphereGeometry(0.1, 4, 4);
+                const materialCzastki = new THREE.MeshBasicMaterial({ color: 0xff4444 });
+                const czastka = new THREE.Mesh(geometriaCzastki, materialCzastki);
+                czastka.position.copy(pozycja);
+                czastka.position.y += 0.5;
+                czastka.predkosc = new THREE.Vector3(
+                    (Math.random() - 0.5) * 2,
+                    Math.random() * 2,
+                    (Math.random() - 0.5) * 2
+                );
+                scena.add(czastka);
+                czastki.push(czastka);
+            }
+
+            const animujEksplozje = () => {
+                czastki.forEach(czastka => {
+                    czastka.position.add(czastka.predkosc);
+                    czastka.predkosc.y -= 0.1; // grawitacja
+                    czastka.material.opacity *= 0.95;
+                });
+
+                if (czastki[0].material.opacity > 0.1) {
+                    requestAnimationFrame(animujEksplozje);
+                } else {
+                    czastki.forEach(czastka => scena.remove(czastka));
+                }
+            };
+            animujEksplozje();
+        }
+
+        function sprawdzZwyciezce() {
+            let pozostaleStatkiGracza = 0;
+            let pozostaleStatkiKomputera = 0;
+
+            for (let i = 1; i <= N; i++) {
+                for (let j = 1; j <= N; j++) {
+                    if (tablicaGracza[i][j] === 1) pozostaleStatkiGracza++;
+                    if (tablicaKomputera[i][j] === 1) pozostaleStatkiKomputera++;
+                }
+            }
+
+            if (pozostaleStatkiKomputera === 0) {
+                iloscWygranychGracza++;
+                document.getElementById('playerScore').textContent = iloscWygranychGracza;
+                if (confirm("GRATULACJE!\nWYGRALES!\nZagrac jeszcze raz?")) {
+                    setTimeout(start, 1000);
+                }
+            } else if (pozostaleStatkiGracza === 0) {
+                iloscWygranychKomputera++;
+                document.getElementById('computerScore').textContent = iloscWygranychKomputera;
+                ujawnijStatkiKomputera();
+                if (confirm("Komputer wygral!\nSprobowac jeszcze raz?")) {
+                    setTimeout(start, 1000);
+                }
+            }
+        }
+
+        function ujawnijStatkiKomputera() {
+            // Ujawnij wszystkie pozostale nieodkryte czesci statku po zakonczeniu gry
+            for (let i = 1; i <= N; i++) {
+                for (let j = 1; j <= N; j++) {
+                    if (tablicaKomputera[i][j] === 1) { // Nieuszkodzone czesci statku
+                        const kostka = kostki3DKomputera[j - 1][i - 1];
+                        kostka.material.color.setHex(0xFFD700);
+                        // Stworz wizualna czesc statku dla nieodkrytych czesci
+                        zbityElementStatku(j, i);
+                    }
+                }
+            }
+        }
+
+        function resetujKoloryPlanszy(kostki) {
+            for (let i = 0; i < N; i++) {
+                for (let j = 0; j < N; j++) {
+                    kostki[i][j].material.color.setHex(kostki[i][j].userData.oryginalnyKolor);
+                }
+            }
+        }
+
+        function stworzWizualizacjeStatkow() {
+            // Stworz wizualizacje 3D statkow komputera na podstawie tablicyKomputera
+            const dlugosciStatkow = [...statki]; // Kopiuj oryginalne dlugosci statkow
+            const umieszczoneStatki = [];
+
+            // Znajdz wszystkie pozycje statkow na planszy komputera
+            for (let i = 1; i <= N; i++) {
+                for (let j = 1; j <= N; j++) {
+                    if (tablicaKomputera[i][j] === 1) {
+                        // Sprawdz czy ta pozycja jest juz czescia umieszczonego statku
+                        let jestCzesciaIstniejacegoStatku = false;
+                        for (const statek of umieszczoneStatki) {
+                            for (const poz of statek.pozycje) {
+                                if (poz.x === j && poz.y === i) {
+                                    jestCzesciaIstniejacegoStatku = true;
+                                    break;
+                                }
+                            }
+                            if (jestCzesciaIstniejacegoStatku) break;
+                        }
+
+                        if (!jestCzesciaIstniejacegoStatku) {
+                            // Znajdz pelny statek zaczynajacy od tej pozycji
+                            const statek = znajdzStatekOdPozycji(j, i);
+                            if (statek) {
+                                umieszczoneStatki.push(statek);
+                                // Stworz wizualizacje 3D dla tego statku
+                                const wizualizacjaStatku = stworzStatek3D(statek.startX, statek.startY, statek.dlugosc, statek.poziomo, false);
+                                statki3DKomputera.push(wizualizacjaStatku);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        function znajdzStatekOdPozycji(startX, startY) {
+            // Sprawdz kierunek poziomy najpierw
+            let dlugosc = 1;
+            while (startX + dlugosc <= N && tablicaKomputera[startY][startX + dlugosc] === 1) {
+                dlugosc++;
+            }
+
+            if (dlugosc > 1) {
+                // Znaleziono statek poziomy
+                const pozycje = [];
+                for (let i = 0; i < dlugosc; i++) {
+                    pozycje.push({ x: startX + i, y: startY });
+                }
+                return {
+                    startX: startX,
+                    startY: startY,
+                    dlugosc: dlugosc,
+                    poziomo: true,
+                    pozycje: pozycje
+                };
+            }
+
+            // Sprawdz kierunek pionowy
+            dlugosc = 1;
+            while (startY + dlugosc <= N && tablicaKomputera[startY + dlugosc][startX] === 1) {
+                dlugosc++;
+            }
+
+            if (dlugosc > 1) {
+                // Znaleziono statek pionowy
+                const pozycje = [];
+                for (let i = 0; i < dlugosc; i++) {
+                    pozycje.push({ x: startX, y: startY + i });
+                }
+                return {
+                    startX: startX,
+                    startY: startY,
+                    dlugosc: dlugosc,
+                    poziomo: false,
+                    pozycje: pozycje
+                };
+            }
+
+            // Jednokomorowy statek
+            return {
+                startX: startX,
+                startY: startY,
+                dlugosc: 1,
+                poziomo: true,
+                pozycje: [{ x: startX, y: startY }]
+            };
+        }
+
+        function rozpocznijBitwe() {
+            stanGry = 'battle';
+            document.getElementById('startBattle').style.display = 'none';
+            document.getElementById('instructions').innerHTML = '<p>Faza Bitwy! Kliknij na plansze wroga (prawa), aby zaatakowac!</p>';
+
+            // Statki pozostaja niewidoczne az do trafienia dla prawdziwej rozgrywki w statki
+
+            tura = 0; // Gracz zaczyna
+        }
+
+        function start() {
+            // Wyczysc scene
+            while (scena.children.length > 0) {
+                scena.remove(scena.children[0]);
+            }
+
+            // Dodaj ponownie ulepszone swiatla
+            const swiatloOtoczenia = new THREE.AmbientLight(0x404040, 0.6);
+            scena.add(swiatloOtoczenia);
+
+            const swiatloKierunkowe = new THREE.DirectionalLight(0xffffff, 1.0);
+            swiatloKierunkowe.position.set(0, 30, 25);
+            swiatloKierunkowe.castShadow = true;
+            swiatloKierunkowe.shadow.mapSize.width = 4096;
+            swiatloKierunkowe.shadow.mapSize.height = 4096;
+            swiatloKierunkowe.shadow.camera.near = 0.5;
+            swiatloKierunkowe.shadow.camera.far = 500;
+            swiatloKierunkowe.shadow.camera.left = -50;
+            swiatloKierunkowe.shadow.camera.right = 50;
+            swiatloKierunkowe.shadow.camera.top = 50;
+            swiatloKierunkowe.shadow.camera.bottom = -50;
+            scena.add(swiatloKierunkowe);
+
+            const swiatloWypelniajace = new THREE.DirectionalLight(0xffffff, 0.3);
+            swiatloWypelniajace.position.set(-20, 20, -20);
+            scena.add(swiatloWypelniajace);
+
+            // Resetuj stan gry
+            stanGry = 'setup';
+            side = 0;
+            dostepneStatki = [...statki];
+            indeksWybranegoStatku = 0;
+            statki3DGracza = [];
+            statki3DKomputera = [];
+
+            // Inicjalizuj tablice
+            tabele();
+
+            // Stworz plansze 3D ze zwiekszona odlegloscia
+            const daneGraczaPlansza = stworzPlansze3D(-10, 0, 0, true);
+            const daneKomputeraPlansza = stworzPlansze3D(10, 0, 0, false);
+
+            grupaPlanszyGracza = daneGraczaPlansza.grupa;
+            grupaPlanszyKomputera = daneKomputeraPlansza.grupa;
+            kostki3DGracza = daneGraczaPlansza.kostki;
+            kostki3DKomputera = daneKomputeraPlansza.kostki;
+
+            // Wygeneruj statki komputera (tylko logiczne umieszczenie)
+            statki.forEach(dlugoscStatku => {
+                losMiejsca(dlugoscStatku);
+            });
+
+            // Aktualizuj UI
+            document.getElementById('playerScore').textContent = iloscWygranychGracza;
+            document.getElementById('computerScore').textContent = iloscWygranychKomputera;
+            document.getElementById('startBattle').style.display = 'none';
+            document.getElementById('shipSelection').style.display = 'block';
+            document.getElementById('instructions').innerHTML = '<p>Faza Ustawien: Kliknij aby umiescic statki na swojej planszy (lewa). Prawy przycisk myszy obraca.</p>';
+
+            stworzUIStatku();
+        }
+
+        function zmianRozmiaru() {
+            kamera.aspect = window.innerWidth / window.innerHeight;
+            kamera.updateProjectionMatrix();
+            renderownik.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Aktualizuj czas dla shaderow
+            czasAnimacji += 0.016; // ~60 FPS
+
+            // Aktualizuj shadery statków
+            try {
+                const aktualizujShaderStatku = (grupaStatku) => {
+                    if (grupaStatku && grupaStatku.children) {
+                        grupaStatku.children.forEach(czesc => {
+                            if (czesc.material && czesc.material.isShaderMaterial && czesc.material.uniforms && czesc.material.uniforms.czas) {
+                                czesc.material.uniforms.czas.value = czasAnimacji;
+                            }
+                        });
+                    }
+                };
+
+                statki3DGracza.forEach(aktualizujShaderStatku);
+                statki3DKomputera.forEach(aktualizujShaderStatku);
+            } catch (e) {
+                console.warn('Blad aktualizacji shaderów statków:', e);
+            }
+            kontrolery.update();
+            renderownik.render(scena, kamera);
+        }
+
+        // Uruchom gre
+        window.addEventListener('load', () => {
+            init();
+            animate();
+        });
+    </script>
+</body>
+</html>
