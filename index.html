@@ -402,7 +402,7 @@
             dostepneStatki.forEach((dlugosc, indeks) => {
                 const opcja = document.createElement('div');
                 opcja.className = 'ship-option';
-                opcja.textContent = `Statek ${dlugosc} pol`;
+                opcja.textContent = `Statek ${dlugosc}`;
                 opcja.onclick = () => wybierzStatek(indeks);
                 if (indeks === indeksWybranegoStatku) opcja.classList.add('selected');
                 opcjeStatkow.appendChild(opcja);
@@ -1574,3 +1574,4 @@
     </script>
 </body>
 </html>
+
